@@ -307,6 +307,8 @@ def get_group_articles(conn, group, page, order='score:'):
 
 ## 3. redis 命令 ##
 
+公共的命令 set get del , 其中set会改变已有key的数据格式
+
 ### 3.1 字符串 ###
 
 可以存储：byte string , 整数 和 浮点数
@@ -385,5 +387,224 @@ OK
 127.0.0.1:6379[1]> bitop and k5 k1 k2
 (integer) 3
 127.0.0.1:6379[1]> 
+```
+
+### 3.2 list ###
+
+列表的常见命令:
+
+| command       | desc                                                   |
+| ------------- | ------------------------------------------------------ |
+| lpush         | 支持多个value                                          |
+| rpush         |                                                        |
+| rpop / lpop   |                                                        |
+| lindex        |                                                        |
+| lrange        | key-name start end 包含start 和 end                    |
+| ltrim         | key-name start end 只保留 从start 到 end 范围内的元素. |
+| blpop / brpop | key-name timeout 阻塞多少秒 并弹出                     |
+| rpoplpush     |                                                        |
+| brpoplpush    |                                                        |
+
+```bash
+127.0.0.1:6379> RPOP k1
+(nil)
+127.0.0.1:6379> lpush k1 23 32
+(integer) 2
+127.0.0.1:6379> rpop k2 aasfd sadfswe wqerqw wqerwqerqw wqer qwer
+(error) ERR wrong number of arguments for 'rpop' command
+127.0.0.1:6379> rpush k2 aasfd sadfswe wqerqw wqerwqerqw wqer qwer
+(integer) 6
+127.0.0.1:6379> LRANGE k2 0 -1
+1) "aasfd"
+2) "sadfswe"
+3) "wqerqw"
+4) "wqerwqerqw"
+5) "wqer"
+6) "qwer"
+127.0.0.1:6379> LRANGE k2 0 1
+1) "aasfd"
+2) "sadfswe"
+127.0.0.1:6379> LRANGE k2 0 3
+1) "aasfd"
+2) "sadfswe"
+3) "wqerqw"
+4) "wqerwqerqw"
+127.0.0.1:6379> LRANGE k2 0 2
+1) "aasfd"
+2) "sadfswe"
+3) "wqerqw"
+127.0.0.1:6379> LRANGE k2 1
+(error) ERR wrong number of arguments for 'lrange' command
+127.0.0.1:6379> LRANGE k2 1 1
+1) "sadfswe"
+127.0.0.1:6379> LTRIM k2 0 1
+OK
+127.0.0.1:6379> LRANGE k2 0 -1
+1) "aasfd"
+2) "sadfswe"
+127.0.0.1:6379> 
+```
+
+### 3.3 set ###
+
+已无序的方式存储多个不同的元素。
+
+| command        | desc                                                         |
+| -------------- | ------------------------------------------------------------ |
+| sadd           | 支持多个value                                                |
+| srem           | 移除里面的元素  支持多个value                                |
+| sismember      | 是否存在                                                     |
+| scard          | 元素的个数                                                   |
+| smembers       | 返回所有的元素                                               |
+| srandmmeber    | key-name [count] count为正时，返回的多个元素不会重复         |
+| spop           | 随机移除一个元素并返回                                       |
+| smove          | source-key dest-key item                                     |
+| sdiff 差集运算 | key-name, key-name1, key-name2 返回存在于第一个而不存在与其他的元素 |
+| sdiffstore     | dest-key key, key1 key2 ..... 将结果存储到dest-key 返回保存的个数 |
+| sinter 交集    |                                                              |
+|                |                                                              |
+| sunion 并集    |                                                              |
+|                |                                                              |
+
+```bash
+127.0.0.1:6379> sadd k1 a b c d e f 
+(integer) 6
+127.0.0.1:6379> srem k1 r
+(integer) 0
+127.0.0.1:6379> srem k1 a
+(integer) 1
+127.0.0.1:6379> SCARD k1
+(integer) 5
+127.0.0.1:6379> SMEMBERS k1
+1) "f"
+2) "e"
+3) "c"
+4) "b"
+5) "d"
+127.0.0.1:6379> smove k1 k2 a
+(integer) 0
+127.0.0.1:6379> smove k1 k2 b
+(integer) 1
+127.0.0.1:6379> SMEMBERS k2
+1) "b"
+127.0.0.1:6379> 
+
+127.0.0.1:6379> sdiff k1
+1) "d"
+2) "e"
+3) "c"
+4) "f"
+127.0.0.1:6379> sdiff k2
+1) "d"
+2) "b"
+3) "c"
+127.0.0.1:6379> sdiff k1 k2
+1) "f"
+2) "e"
+127.0.0.1:6379> 
+
+```
+
+### 3.4 hash ###
+
+| Command      | Desc                      |
+| ------------ | ------------------------- |
+| hmget        | key-name key key1 key2    |
+| hmset        | key-name k1 v1 k2 v2      |
+| hdel         | key-name k1 k2            |
+| hlen         | key-name 键的数量         |
+| hexists      | key-name k1 判断k是否存在 |
+| hkeys        | 获取所有的k               |
+| hvals        |                           |
+| hgetall      | 获取所有的键值对          |
+| hincrby      | key-name k increment      |
+| hincrbyfloat |                           |
+
+```bash
+127.0.0.1:6379> HMSET k1 k1 v1 k2 v2 k3 v3
+OK
+127.0.0.1:6379> hmget k1 k1 k2
+1) "v1"
+2) "v2"
+127.0.0.1:6379> HEXISTS k1 a
+(integer) 1
+127.0.0.1:6379> HEXISTS k1 g
+(integer) 0
+127.0.0.1:6379> HKEYS k1
+1) "k1"
+2) "k2"
+3) "k3"
+4) "a"
+5) "c"
+127.0.0.1:6379> HVALS k1
+1) "v1"
+2) "v2"
+3) "v3"
+4) "b"
+5) "d"
+127.0.0.1:6379> HGETALL k1
+ 1) "k1"
+ 2) "v1"
+ 3) "k2"
+ 4) "v2"
+ 5) "k3"
+ 6) "v3"
+ 7) "a"
+ 8) "b"
+ 9) "c"
+10) "d"
+127.0.0.1:6379> HSET k1 12 abc
+(integer) 1
+127.0.0.1:6379> HINCRBY k1 12 12
+(error) ERR hash value is not an integer
+127.0.0.1:6379> HSET k1 12 1234  # 这里更改成功了也不会显示 1
+(integer) 0
+127.0.0.1:6379> HINCRBY k1 12 3
+(integer) 1237
+127.0.0.1:6379> 
+```
+
+### 3.5 有序集合 ###
+
+分值以 IEEE 754 双精度浮点数格式存储
+
+| Command | Desc                                                         |
+| ------- | ------------------------------------------------------------ |
+| ZADD    | key-name score member [score member]                         |
+| ZREM    |                                                              |
+| ZCARD   | 成员的数量                                                   |
+| ZINCRBY | key-name increment member：add to score                      |
+| ZCOUNT  | key-name min max 介于min max 之间的成员数量                  |
+| ZRANK   | key-name member 返回成员再集合中排名 (升序排序)              |
+| ZSCORE  | key-name member 返回成员的分值                               |
+| ZRANGE  | key-name start stop [withscores] 返回排序介于start stop 之间的成员 |
+
+```bash
+127.0.0.1:6379> ZADD k1 10 a 11 b 12 c
+(integer) 3
+127.0.0.1:6379> ZCARD k1
+(integer) 3
+127.0.0.1:6379> ZINCRBY k1 12 a
+"22"
+127.0.0.1:6379> ZSCORE k1 b
+"11"
+127.0.0.1:6379> ZRANK k1 a
+(integer) 2
+127.0.0.1:6379> ZRANK k1 b
+(integer) 0
+127.0.0.1:6379> ZRANK k1 c
+(integer) 1
+127.0.0.1:6379> zadd k1 d 0 
+(error) ERR value is not a valid float
+127.0.0.1:6379> zadd k1 d 0.1
+(error) ERR value is not a valid float
+127.0.0.1:6379> zadd k1 0 d
+(integer) 1
+127.0.0.1:6379> zadd k1 0 hh
+(integer) 1
+127.0.0.1:6379> ZRANGE k1 0 1
+1) "d"
+2) "hh"
+127.0.0.1:6379> 
 ```
 
