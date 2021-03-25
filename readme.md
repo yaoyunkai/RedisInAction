@@ -608,3 +608,44 @@ OK
 127.0.0.1:6379> 
 ```
 
+| Command              | Desc                                                         |
+| -------------------- | ------------------------------------------------------------ |
+| arevrank             | 返回成员的排名 降序排序                                      |
+| zrevrange            | 返回排序介于start stop 之间的成员 [降序]                     |
+| zrangebyscore        | key-name min max [withscores] [limit offset count] 返回分值介于min max 之间的成员 |
+| zrevrangebyscore     |                                                              |
+| zremrangebyrank      | key-name start stop 移除集合中排名介于start stop 之间的所有成员 |
+| zremrangebyscore     |                                                              |
+| zinterstore 交集运算 | dest-key key-count keys...... [WEIGHTS weight [weight ...]] [AGGREGATE SUM\|MIN\|MAX] |
+| zunionstore 并集运算 |                                                              |
+
+```bash
+127.0.0.1:6379> ZREVRANK k1 a
+(integer) 0
+127.0.0.1:6379> ZREVRANK k1 b
+(integer) 2
+127.0.0.1:6379> ZREVRANK k1 hh
+(integer) 3
+127.0.0.1:6379> ZREVRANK k1 ddd
+(nil)
+127.0.0.1:6379> ZREVRANGE k1 2 5
+1) "b"
+2) "hh"
+3) "d"
+127.0.0.1:6379> ZREVRANGE k1 2 2
+1) "b"
+127.0.0.1:6379> ZRANGEBYSCORE k1 0 100 limit 0 2
+1) "d"
+2) "hh"
+127.0.0.1:6379> ZRANGEBYSCORE k1 0 100 limit 1 2
+1) "hh"
+2) "b"
+127.0.0.1:6379> ZREMRANGEBYRANK k1 0 0
+(integer) 1
+127.0.0.1:6379> 
+
+conn  = redis.Redis(host='192.168.20.123', db=0)
+conn.zinterstore('k3', ['k1', 'k2'], aggregate='sum')
+conn.zunionstore('k4', ['k1', 'k2'], aggregate='min')
+```
+
