@@ -73,9 +73,9 @@ def get_articles(conn, page, order='score:'):
     ids = conn.zrevrange(order, start, end)
     articles = []
     # 根据文章ID获取文章的详细信息。
-    for id in ids:
-        article_data = conn.hgetall(id)
-        article_data['id'] = id
+    for _id in ids:
+        article_data = conn.hgetall(_id)
+        article_data['id'] = _id
         articles.append(article_data)
 
     return articles

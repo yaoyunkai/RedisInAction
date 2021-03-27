@@ -649,3 +649,88 @@ conn.zinterstore('k3', ['k1', 'k2'], aggregate='sum')
 conn.zunionstore('k4', ['k1', 'k2'], aggregate='min')
 ```
 
+### 3.6 发布与订阅 ###
+
+redis中与发布和订阅有关的命令
+
+| 命令         | 描述                                             |
+| ------------ | ------------------------------------------------ |
+| subscribe    | 订阅一个或者多个频道                             |
+| unsubscribe  | 退订一个或者多个频道，不加参数的话退订所有的频道 |
+| publish      | channel message                                  |
+| psubscribe   | 使用模式匹配的方式订阅频道                       |
+| punsubscribe |                                                  |
+
+#### 3.7.1 redis sort ####
+
+```bash
+127.0.0.1:6379> rpush k1 23 45 110 4 8 
+(integer) 5
+127.0.0.1:6379> sort k1
+1) "4"
+2) "8"
+3) "23"
+4) "45"
+5) "110"
+127.0.0.1:6379> sort k1 ALPHA
+1) "110"
+2) "23"
+3) "4"
+4) "45"
+5) "8"
+127.0.0.1:6379> hset k2 f 5
+(integer) 1
+127.0.0.1:6379> hset k2 f 1
+(integer) 0
+127.0.0.1:6379> hset k2 f 5
+(integer) 0
+127.0.0.1:6379> hset k3 f 1
+(integer) 1
+127.0.0.1:6379> hset k4 f 9
+(integer) 1
+127.0.0.1:6379> hset k5 f 3
+(integer) 1
+```
+
+#### 3.7.2 基本的Redis事务 ####
+
+有关的命令： `WATCH` `MULTI` `EXEC` `UNWATCH` `DISCARD`
+
+被 MULTI 和 EXEC 包围的所以指令会一个一个地执行，直到执行完成。当一个事务完成后，redis才会处理其他客户端的命令。
+
+```python
+import threading
+import time
+
+import redis
+
+conn = redis.Redis('192.168.20.123', db=0)
+
+
+def trans():
+    pp = conn.pipeline()
+    pp.incr('trans:')
+    time.sleep(0.1)
+    pp.incr('trans:', -1)
+    print(pp.execute())
+
+
+if __name__ == '__main__':
+    while True:
+        for i in range(3):
+            threading.Thread(target=trans, ).start()
+        time.sleep(0.5)
+```
+
+#### 3.7.3 键的过期时间 ####
+
+| 命令      | 描述                       |
+| --------- | -------------------------- |
+| PERSIST   | 移除键的过期时间           |
+| TTL       | 获取键 离过期还有多久      |
+| EXPIRE    | 指定键的过期秒数           |
+| EXPIREAT  | 指定键的过期时间戳         |
+| PTTL      | 获取键 离过期还有多久 毫秒 |
+| PEXPIRE   | 指定键的过期毫秒数         |
+| PEXPIREAT |                            |
+
