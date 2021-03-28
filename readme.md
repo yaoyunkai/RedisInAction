@@ -734,3 +734,73 @@ if __name__ == '__main__':
 | PEXPIRE   | 指定键的过期毫秒数         |
 | PEXPIREAT |                            |
 
+## 4. 数据安全和性能保障 ##
+
+### 4.1 持久化选项 ###
+
+两种持久化方式：
+
+- 快照SAP：把某一时刻的所有数据写入到硬盘中。
+- 只追加文件AOF：在执行命令时，将执行的写命令复制到硬盘。
+
+#### 4.1.1 快照持久化 ####
+
+- client 向Redis发送 `BGSAVE` 创建快照。redis调用fork创建一个子进程，子进程负责将快照写入硬盘，父进程继续处理命令请求。
+- 发送 `SAVE` 创建快照。使用save后，redis停止接受其他命令，直到快照创建完毕。
+- 在conf中，save 60 10000表示在上一次创建快照之后，当 60秒内写入10000次 的条件满足后，redis会调用 `BGSAVE`
+- 使用 `SHUTDOWN` , 会执行 SAVE命令。
+- 当一个服务器连接另一个服务器时，从服务器向主服务器发送 `SYNC` , 条件满足时，主服务器会执行 `BGSAVE`
+
+#### 4.1.2 AOF 持久化 ####
+
+`appendfsync` 对AOF文件同步的影响
+
+- always
+- everysec
+- no
+
+client可以发送 `BGREWRITEAOF` 来重写AOF文件。原理相似于 `BGSAVE`
+
+对于两个配置的解释：
+
+- `auto-aof-rewrite-percentage 100` 表示当AOF文件的体积比上一次重写之后的AOF体积大了至少一倍时 redis 执行 `BGREWRITEAOF` 
+- `auto-aof-rewrite-min-size 64mb` 
+
+### 4.2 复制 replication ###
+
+#### 4.2.1 配置选项 ####
+
+conf文件：`slaveof host port`
+
+用户可以发送 `SLAVEOF no one` 命令来让服务器终止复制操作。
+
+#### 4.2.2 redis 复制的启动过程 ####
+
+| step | master                                                      | slave                        |
+| ---- | ----------------------------------------------------------- | ---------------------------- |
+| 1    | waitting                                                    | 连接主服务器，发送SYNC       |
+| 2    | 执行 `BGSAVE`, 使用缓冲区记录 `BGSAVE` 之后执行的所有写命令 | 根据配置是否保留现有的数据   |
+| 3    | 完成 `BGSAVE` 后，发送给slave                               | 丢弃旧数据，载入master的快照 |
+| 4    | 向slave发送缓冲中的写命令                                   | 接受master的写命令           |
+| 5    | 向slave同步正常的写命令                                     |                              |
+
+### 4.4 事务 ###
+
+对 `WATCH` 命令的解释：用户使用 watch对键监视之后，直到用户执行 exec 命令的这段时间里，如果有其他客户端抢先对任何被监视的键进行了 替换，更新和删除的操作，当用户尝试执行 exec命令时，事务将失败并返回错误。
+
+`UNWATCH` 可以在 multi 和 watch 命令之间对连接进行重置。
+
+`DISCARD` 可以在 multi 和 exec 之间对连接进行重置。
+
+### 4.5 非事务性流水线 ###
+
+```python
+pipe = conn.pipeline(False)
+# ......
+pipe.execute()
+```
+
+## 5. 使用Redis构建支持程序 ##
+
+### 5.1 使用redis来记录日志 ###
+
