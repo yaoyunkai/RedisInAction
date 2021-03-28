@@ -23,6 +23,8 @@ the is a part of "RedisInAction"
 """
 import time
 
+import redis
+
 
 def list_item(conn, item_id, seller_id, price):
     inventory = 'inventory:{}'.format(seller_id)
@@ -84,3 +86,9 @@ def purchase_item(conn, buyer_id, item_id, seller_id, l_price):
 
     return False
 
+
+if __name__ == '__main__':
+    re = redis.Redis('192.168.20.123', db=3)
+
+    # list_item(re, 'itemA', '3', 20)
+    purchase_item(re, '5', 'itemA', '3', 20)

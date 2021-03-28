@@ -804,3 +804,74 @@ pipe.execute()
 
 ### 5.1 使用redis来记录日志 ###
 
+#### 5.1.1 最新日志 ####
+
+记录连续更新的最新日志消息 (recent log message)
+
+```python
+def log_recent(conn, name, message, severity=logging.INFO, pipe=None):
+    severity = str(SEVERITY.get(severity, severity)).lower()
+    dest = 'recent:{}:{}'.format(name, severity)
+    message = '{} {}'.format(time.asctime(), message)
+
+    pipe = pipe or conn.pipeline()
+    pipe.lpush(dest, message)
+    pipe.ltrim(dest, 0, 99)
+    pipe.execute()
+```
+
+#### 5.1.2 常见日志 ####
+
+```python
+def log_common(conn, name, message, severity=logging.INFO, timeout=5):
+    # 设置日志的级别。
+    severity = str(SEVERITY.get(severity, severity)).lower()
+    # 负责存储最新日志的键。
+    destination = 'common:%s:%s' % (name, severity)
+    # 因为程序每小时需要轮换一次日志，所以它使用一个键来记录当前所处的小时数。
+    start_key = destination + ':start'
+    pipe = conn.pipeline()
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            # 对记录当前小时数的键进行监视，确保轮换操作可以正确地执行。
+            pipe.watch(start_key)
+            # 取得当前时间。
+            now = datetime.datetime.utcnow().timetuple()
+            # 取得当前所处的小时数。
+            hour_start = datetime.datetime(*now[:4]).isoformat()
+
+            existing = pipe.get(start_key)
+            # 创建一个事务。
+            pipe.multi()
+            # 如果目前的常见日志列表是上一个小时的……
+            if existing and existing < hour_start:
+                # ……那么将旧的常见日志信息进行归档。
+                pipe.rename(destination, destination + ':last')
+                pipe.rename(start_key, destination + ':pstart')
+                # 更新当前所处的小时数。
+                pipe.set(start_key, hour_start)
+
+            # 对记录日志出现次数的计数器执行自增操作。
+            pipe.zincrby(destination, message)
+            # log_recent()函数负责记录日志并调用execute()函数。
+            log_recent(pipe, name, message, severity, pipe)  # NOQA
+            return
+        except redis.exceptions.WatchError:
+            # 如果程序因为其他客户端在执行归档操作而出现监视错误，那么重试。
+            continue
+```
+
+### 5.2 计数器和统计数据 ###
+
+time series counter
+
+#### 5.2.1 计数器 ####
+
+**清理旧计数器**
+
+- 任何时候都可能会有新的计数器被添加进来
+- 同一时间可能会有多个不同的清理操作在执行
+- 对于每天只更新一次的计数器来说，应该控制清理频率
+- 如果一个计数器不包含任何数据，那么程序就不应该尝试对它进行清理
+
