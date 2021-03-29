@@ -877,3 +877,126 @@ time series counter
 
 ### 5.3 查找IP属性城市以及国家 ###
 
+```python
+def import_ips_to_redis(conn, filename):
+    csv_file = csv.reader(open(filename, 'r'))
+    for count, row in enumerate(csv_file):
+        start_ip = row[0] if row else ''
+        if 'i' in start_ip.lower():
+            continue
+        if '.' in start_ip:
+            start_ip = ip_to_score(start_ip)
+        elif start_ip.isdigit():
+            start_ip = int(start_ip, 10)
+        else:
+            continue
+
+        city_id = row[2] + '_' + str(count)
+        conn.zadd('ip2cityid:', city_id, start_ip)
+
+
+def import_cities_to_redis(conn, filename):
+    for row in csv.reader(open(filename, 'r', errors='ignore')):
+        if len(row) < 4 or not row[0].isdigit():
+            continue
+        # row = [i.decode('latin-1') for i in row]
+        city_id = row[0]
+        country = row[1]
+        region = row[2]
+        city = row[3]
+        conn.hset('cityid2city:', city_id, json.dumps([city, region, country]))
+
+
+def find_city_by_ip(conn, ip_address):
+    if isinstance(ip_address, str):
+        ip_address = ip_to_score(ip_address)
+    city_id = conn.zrevrangebyscore('ip2cityid:', ip_address, 0, start=0, num=1)
+    if not city_id:
+        return None
+    city_id = city_id[0].partition('_')[0]
+    return json.loads(conn.hget('cityid2city:', city_id))
+```
+
+### 5.4 服务的发现与配置 ###
+
+## 6. Redis 构建Application Components ##
+
+### 6.1 自动补全 ###
+
+#### 6.1.2 通讯录自动补全 ####
+
+名称可以看作abc abca abcd ... abd这样的有序字符串序列，那么查找 abc前缀就是查找 介于 `abbz...` 之后和 `abd` 之前的字符串
+
+比如： `abc{` 位于abd之前，又位于所有带有abc前缀的合法名字之后。
+
+可以使用空字节 null 来代替反引号，并使用编码支持的最大值来代替左花括号。
+
+### 6.2 分布式锁 ###
+
+乐观锁与悲观锁
+
+#### 6.2.2 简易锁 ####
+
+- 持有锁的进程因为操作时间过长而导致锁被自动释放，但进程本身并不知晓这一点，可能就会释放其他进程持有的锁
+- 一个持有锁并打算执行长时间操作的进程已经崩溃，其他进程不知道但只能等待
+- 在一个进程持有的锁过期后，其他多个进程同时尝试去获取锁，而且都获得了锁
+- 1和3情况同时出现，多个进程都获得了锁，而且每个进程都以为自己是唯一一个获得锁得进程
+
+```python
+def acquire_lock(conn, lock_name, acquire_timeout=10):
+    iden = str(uuid.uuid4())
+    end = time.time() + acquire_timeout
+    while time.time() < end:
+        if conn.setnx('lock:{}'.format(lock_name), iden):
+            return iden
+        time.sleep(0.001)
+    return False
+
+
+def release_lock(conn, lockname, identifier):
+    pipe = conn.pipeline(True)
+    lockname = 'lock:' + lockname
+    if isinstance(identifier, str):
+        identifier = identifier.encode()
+
+    while True:
+        try:
+            pipe.watch(lockname)
+            if pipe.get(lockname) == identifier:
+                pipe.multi()
+                pipe.delete(lockname)
+                pipe.execute()
+                return True
+
+            pipe.unwatch()
+            break
+
+        except redis.exceptions.WatchError:
+            pass
+
+    return False
+```
+
+#### 6.2.4 细粒度锁 ####
+
+dogpile效应
+
+#### 6.2.5 带有超时限制特性的锁 ####
+
+```python
+def acquire_lock_with_timeout(conn, lockname, acquire_timeout=10, lock_timeout=10):
+    identifier = str(uuid.uuid4())
+    lockname = 'lock:' + lockname
+    lock_timeout = int(math.ceil(lock_timeout))
+
+    end = time.time() + acquire_timeout
+    while time.time() < end:
+        if conn.setnx(lockname, identifier):
+            conn.expire(lockname, lock_timeout)
+            return identifier
+        elif conn.ttl(lockname) < 0:
+            conn.expire(lockname, lock_timeout)
+        time.sleep(.001)
+    return False
+```
+
