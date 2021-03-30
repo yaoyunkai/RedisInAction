@@ -1000,3 +1000,127 @@ def acquire_lock_with_timeout(conn, lockname, acquire_timeout=10, lock_timeout=1
     return False
 ```
 
+### 6.3 计数信号量 ###
+
+```python
+def acquire_fair_semaphore(conn, semname, limit, timeout=10):
+    identifier = str(uuid.uuid4())
+    czset = semname + ':owner'
+    ctr = semname + ':counter'
+
+    now = time.time()
+    pipeline = conn.pipeline(True)
+    pipeline.zremrangebyscore(semname, '-inf', now - timeout)
+    pipeline.zinterstore(czset, {czset: 1, semname: 0})
+
+    pipeline.incr(ctr)
+    counter = pipeline.execute()[-1]
+
+    pipeline.zadd(semname, {identifier: now})
+    pipeline.zadd(czset, {identifier: counter})
+
+    pipeline.zrank(czset, identifier)
+    if pipeline.execute()[-1] < limit:
+        return identifier
+
+    pipeline.zrem(semname, identifier)
+    pipeline.zrem(czset, identifier)
+    pipeline.execute()
+    return None
+
+
+def release_fair_semaphore(conn, semname, identifier):
+    pipeline = conn.pipeline(True)
+    pipeline.zrem(semname, identifier)
+    pipeline.zrem(semname + ':owner', identifier)
+    return pipeline.execute()[0]
+```
+
+### 6.4 任务队列 ###
+
+#### 6.4.1 FIFO ####
+
+```python
+def send_sold_email_via_queue(conn, seller, item, price, buyer):
+    data = {
+        'seller_id': seller,
+        'item_id': item,
+        'price': price,
+        'buyer_id': buyer,
+        'time': time.time()
+    }
+
+    conn.rpush('queue:email', json.dumps(data))
+
+
+def process_sold_email_queue(conn):
+    while not QUIT:
+        packed = conn.blpop('queue:email', 30)
+        if not packed:
+            continue
+
+        to_send = json.loads(packed[1])
+        try:
+            # fetch_data_and_send_sold_email(to_send)
+            pass
+        except Exception as err:
+            print("Failed to send sold email", err, to_send)
+        else:
+            print("Sent sold email", to_send)
+
+
+def worker_watch_queue(conn, queue, callbacks):
+    while not QUIT:
+        packed = conn.blpop([queue], 30)
+        if not packed:
+            continue
+
+        name, args = json.loads(packed[1])
+        if name not in callbacks:
+            print("Unknown callback %s" % name)
+            continue
+        callbacks[name](*args)
+```
+
+**实现优先级队列**
+可以使用 `BLPOP` 传入多个队列的key，那么会最先弹出第一个队列的value。
+
+#### 6.4.2 延迟队列 ####
+
+使用有序集合来存储任务，在合适的时机将任务添加到执行队列里面。
+
+```python
+def execute_later(conn, queue, name, args, delay=0):
+    identifier = str(uuid.uuid4())
+    item = json.dumps([identifier, queue, name, args])
+    if delay > 0:
+        conn.zadd('delayed:', {item: time.time() + delay})
+    else:
+        conn.rpush('queue:' + queue, item)
+    return identifier
+
+
+def poll_queue(conn):
+    while not QUIT:
+        item = conn.zrange('delayed:', 0, 0, withscores=True)
+        if not item or item[0][1] > time.time():
+            time.sleep(.01)
+            continue
+
+        item = item[0][0]
+        identifier, queue, function, args = json.loads(item)
+
+        locked = acquire_lock(conn, identifier)
+        if not locked:
+            continue
+
+        if conn.zrem('delayed:', item):
+            conn.rpush('queue:' + queue, item)
+
+        release_lock(conn, identifier, locked)
+```
+
+### 6.5 消息拉取 ###
+
+#### 6.5.1 单接收者消息的发送与订阅替代品 ####
+
