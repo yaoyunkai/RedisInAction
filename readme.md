@@ -1134,6 +1134,8 @@ def poll_queue(conn):
 
 这个过程就是从文档 --> 到redis集合的过程。
 
+![image-20210405221703197](.assert/image-20210405221703197.png)
+
 **1. 基本索引操作**
 
 从文档里提取单词的过程通常被称为语法分析 parsing 和 标记化 tokenization 。这个过程可以产生出一系列用于标识文档的标记 token ，有时也被称为单词 word。
@@ -1295,4 +1297,66 @@ def search_and_sort(conn, query, tid=None, ttl=300, sort="-updated", start=0, nu
 ```
 
 ### 7.2 有序索引 ###
+
+#### 7.2.1 使用有序集合对搜索结果进行排序 ####
+
+使用有序集合(zset)保存文章(document) 的更新时间以及文章获得的投票数量。
+
+```python
+def search_and_zsort(conn, query, uniq_id=None, ttl=300, update=1, vote=0, start=0, num=20, desc=True):
+    if uniq_id and not conn.expire(uniq_id, ttl):
+        uniq_id = None
+
+    if not uniq_id:
+        uniq_id = parse_and_search(conn, query, ttl=ttl)
+
+        scored_search = {
+            uniq_id: 0,
+            'sort:update': update,
+            'sort:votes': vote,
+        }
+
+        uniq_id = zintersect(conn, scored_search, ttl)
+
+    pipeline = conn.pipeline(True)
+    pipeline.zcard('idx:' + uniq_id)
+    if desc:
+        pipeline.zrevrange('idx:' + uniq_id, start, start + num - 1)
+    else:
+        pipeline.zrange('idx:' + uniq_id, start, start + num - 1)
+    results = pipeline.execute()
+
+    return results[0], results[1], uniq_id
+
+
+def _zset_common(conn, method, scores, ttl=30, **kw):
+    """
+
+    :param conn:
+    :param method:
+    :param scores: from scored_search --> dict
+    :param ttl:
+    :param kw:
+    :return:
+    """
+    uniq_id = str(uuid.uuid4())
+    execute = kw.pop('_execute', True)
+    pipeline = conn.pipeline(True) if execute else conn
+    for key in list(scores.keys()):
+        scores['idx:' + key] = scores.pop(key)
+    # {'idx:uuid4': 0, 'idx:sort:update': 1, 'idx:sort:votes': 0}
+    getattr(pipeline, method)('idx:' + uniq_id, scores, **kw)
+    pipeline.expire('idx:' + uniq_id, ttl)
+    if execute:
+        pipeline.execute()
+    return uniq_id
+
+
+def zintersect(conn, items, ttl=30, **kw):
+    return _zset_common(conn, 'zinterstore', dict(items), ttl, **kw)
+
+
+def zunion(conn, items, ttl=30, **kw):
+    return _zset_common(conn, 'zunionstore', dict(items), ttl, **kw)
+```
 

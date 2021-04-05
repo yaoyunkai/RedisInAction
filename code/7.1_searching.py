@@ -23,6 +23,13 @@ WORDS_RE = re.compile("[a-z']{2,}")
 
 
 def tokenize(content):
+    """
+    从文档里提取单词的过程通常被称为语法分析 parsing 和 标记化 tokenization
+    标记化的一个常见的附加步骤，就是移除内容中的非用词 stop word。
+
+    :param content: 文章的内容
+    :return:
+    """
     words = set()
     for match in WORDS_RE.finditer(content.lower()):
         word = match.group().strip("'")
@@ -32,6 +39,14 @@ def tokenize(content):
 
 
 def index_document(conn, doc_id, content):
+    """
+    保存集合的过程
+
+    :param conn:
+    :param doc_id: document id
+    :param content: document content
+    :return:
+    """
     words = tokenize(content)
 
     pipeline = conn.pipeline(True)
@@ -41,6 +56,16 @@ def index_document(conn, doc_id, content):
 
 
 def _set_common(conn, method, names, ttl=30, execute=True):
+    """
+    将结果保存到 idx:uuid4 --> set
+
+    :param conn:
+    :param method: 使用方法 处理不同集合的方法
+    :param names: 给定的单词，即要选择的idx:[key] 的key
+    :param ttl:
+    :param execute:
+    :return:
+    """
     _id = str(uuid.uuid4())
     pipeline = conn.pipeline(True) if execute else conn
     names = ['idx:' + name for name in names]
@@ -67,6 +92,12 @@ QUERY_RE = re.compile("[+-]?[a-z']{2,}")
 
 
 def parse(query):
+    """
+    解析查询条件
+
+    :param query:
+    :return:
+    """
     unwanted = set()
     _all = []
     current = set()
@@ -97,6 +128,13 @@ def parse(query):
 
 
 def parse_and_search(conn, query, ttl=30):
+    """
+
+    :param conn:
+    :param query: 输入的查询字符串
+    :param ttl:
+    :return:
+    """
     _all, unwanted = parse(query)
     if not _all:
         return None
@@ -121,6 +159,18 @@ def parse_and_search(conn, query, ttl=30):
 
 
 def search_and_sort(conn, query, tid=None, ttl=300, sort="-updated", start=0, num=20):
+    """
+    Redis SORT 语法,
+
+    :param conn:
+    :param query:
+    :param tid: uuid4
+    :param ttl:
+    :param sort:
+    :param start: idx:uuid4 结果集中 开始的位置
+    :param num:
+    :return:
+    """
     desc = sort.startswith('-')
     sort = sort.lstrip('-')
     by = "kb:doc:*->" + sort
@@ -138,3 +188,75 @@ def search_and_sort(conn, query, tid=None, ttl=300, sort="-updated", start=0, nu
     results = pipeline.execute()
 
     return results[0], results[1], tid
+
+
+def search_and_zsort(conn, query, uniq_id=None, ttl=300, update=1, vote=0, start=0, num=20, desc=True):
+    if uniq_id and not conn.expire(uniq_id, ttl):
+        uniq_id = None
+
+    if not uniq_id:
+        uniq_id = parse_and_search(conn, query, ttl=ttl)
+
+        scored_search = {
+            uniq_id: 0,
+            'sort:update': update,
+            'sort:votes': vote,
+        }
+
+        uniq_id = zintersect(conn, scored_search, ttl)
+
+    pipeline = conn.pipeline(True)
+    pipeline.zcard('idx:' + uniq_id)
+    if desc:
+        pipeline.zrevrange('idx:' + uniq_id, start, start + num - 1)
+    else:
+        pipeline.zrange('idx:' + uniq_id, start, start + num - 1)
+    results = pipeline.execute()
+
+    return results[0], results[1], uniq_id
+
+
+def _zset_common(conn, method, scores, ttl=30, **kw):
+    """
+
+    :param conn:
+    :param method:
+    :param scores: from scored_search --> dict
+    :param ttl:
+    :param kw:
+    :return:
+    """
+    uniq_id = str(uuid.uuid4())
+    execute = kw.pop('_execute', True)
+    pipeline = conn.pipeline(True) if execute else conn
+    for key in list(scores.keys()):
+        scores['idx:' + key] = scores.pop(key)
+    # {'idx:uuid4': 0, 'idx:sort:update': 1, 'idx:sort:votes': 0}
+    getattr(pipeline, method)('idx:' + uniq_id, scores, **kw)
+    pipeline.expire('idx:' + uniq_id, ttl)
+    if execute:
+        pipeline.execute()
+    return uniq_id
+
+
+def zintersect(conn, items, ttl=30, **kw):
+    return _zset_common(conn, 'zinterstore', dict(items), ttl, **kw)
+
+
+def zunion(conn, items, ttl=30, **kw):
+    return _zset_common(conn, 'zunionstore', dict(items), ttl, **kw)
+
+
+def string_to_score(string, ignore_case=False):
+    if ignore_case:
+        string = string.lower()
+
+    pieces = list(map(ord, string[:6]))
+    while len(pieces) < 6:
+        pieces.append(-1)
+
+    score = 0
+    for piece in pieces:
+        score = score * 257 + piece + 1
+
+    return score * 2 + (len(string) > 6)
