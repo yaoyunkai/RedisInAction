@@ -260,3 +260,47 @@ def string_to_score(string, ignore_case=False):
         score = score * 257 + piece + 1
 
     return score * 2 + (len(string) > 6)
+
+
+# ================================== 7.3 ================================================
+
+AVERAGE_PER_1K = {}
+
+
+def cpc_to_ecpm(views, clicks, cpc):
+    return 1000. * cpc * clicks / views
+
+
+def cpa_to_ecpm(views, actions, cpa):
+    return 1000. * cpa * actions / views
+
+
+TO_ECPM = {
+    b'cpc': cpc_to_ecpm,
+    b'cpa': cpa_to_ecpm,
+    b'cpm': lambda *args: args[-1],
+}
+
+
+def index_ad(conn, ad_id, locations, content, ad_type, value):
+    pipeline = conn.pipeline(True)
+    if not isinstance(ad_type, bytes):
+        ad_type = ad_type.encode('utf8')
+
+    for location in locations:
+        pipeline.sadd('idx:req:' + location, ad_id)
+
+    words = tokenize(content)
+    for word in words:
+        # 添加一个有序集合 成员为广告id 分值 0
+        pipeline.zadd('idx:' + word, {ad_id: 0})
+
+    rvalue = TO_ECPM[ad_type](1000, AVERAGE_PER_1K.get(ad_type, 1), value)
+
+    # 更新广告的类型
+    pipeline.hset('type:', ad_id, ad_type)
+    # 添加广告的价值到 有序集合
+    pipeline.zadd('idx:ad:value:', {ad_id: rvalue})
+    pipeline.zadd('ad:base_value:', {ad_id: value})  # 广告的基本价格
+    pipeline.sadd('terms:' + ad_id, *list(words))  # 广告类型的相关性 set
+    pipeline.execute()
