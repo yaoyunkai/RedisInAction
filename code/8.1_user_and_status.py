@@ -6,7 +6,9 @@
 the is a part of "RedisInAction"
 
 """
+import http.server
 import math
+import socketserver
 import threading
 import time
 import uuid
@@ -344,6 +346,21 @@ def clean_timelines(conn, uid, status_id, start=0, on_lists=False):
 
     elif not on_lists:
         execute_later(conn, 'default', 'clean_timelines', [conn, uid, status_id, 0, True])
+
+
+# =============================================================================
+# =============================================================================
+# =========================  8.5 Stream API       =============================
+# =============================================================================
+# =============================================================================
+
+class StreamingAPIServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+
+
+class StreamingAPIRequestHandler(http.server.BaseHTTPRequestHandler):
+    identifier = None
+    query = None
 
 
 if __name__ == '__main__':

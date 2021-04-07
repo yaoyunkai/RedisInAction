@@ -1461,3 +1461,33 @@ def get_status_messages(conn, uid, timeline='home:', page=1, count=30):
     return [_f for _f in pipe.execute() if _f]
 ```
 
+### 8.5 流API ###
+
+流API的相关问题：
+
+- 流API需要对外公开哪些事件?
+- 是否需要进行访问限制
+- 流API应该提供哪些过滤选项
+
+## 11. Lua脚本编程 ##
+
+#### 11.1.1 Lua脚本载入到Redis ####
+
+`SCRIPT LOAD` 
+
+`EVALSHA`
+
+| Lua值                  | Python值                                |
+| ---------------------- | --------------------------------------- |
+| true                   | 1                                       |
+| false                  | None                                    |
+| nil                    | 他会让脚本停止返回Lua表格中剩余的任何值 |
+| float                  | 转换成整数                              |
+| 巨大的浮点数           | 转换成当前python版本的最小整数          |
+| strings                | str                                     |
+| 1 到 +-2^53 - 1 的整数 | 无需转换                                |
+
+一次的lua脚本执行，可以看作一次原子的操作
+
+已经对结构进行了修改的lua脚本将无法被中断
+
