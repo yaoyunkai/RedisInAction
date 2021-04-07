@@ -304,3 +304,141 @@ def index_ad(conn, ad_id, locations, content, ad_type, value):
     pipeline.zadd('ad:base_value:', {ad_id: value})  # 广告的基本价格
     pipeline.sadd('terms:' + ad_id, *list(words))  # 广告类型的相关性 set
     pipeline.execute()
+
+
+def target_ads(conn, locations, content):
+    pipeline = conn.pipeline(True)
+    matched_ads, base_ecpm = match_location(pipeline, locations)
+    words, targeted_ads = finish_scoring(
+        pipeline, matched_ads, base_ecpm, content)
+
+    pipeline.incr('ads:served:')
+    pipeline.zrevrange('idx:' + targeted_ads, 0, 0)
+    target_id, targeted_ad = pipeline.execute()[-2:]
+
+    if not targeted_ad:
+        return None, None
+
+    ad_id = targeted_ad[0]
+    record_targeting_result(conn, target_id, ad_id, words)
+
+    return target_id, ad_id
+
+
+def match_location(pipe, locations):
+    required = ['req:' + loc for loc in locations]
+    matched_ads = union(pipe, required, ttl=300, _execute=False)
+    return matched_ads, zintersect(pipe, {matched_ads: 0, 'ad:value:': 1}, _execute=False)
+
+
+def finish_scoring(pipe, matched, base, content):
+    bonus_ecpm = {}
+    words = tokenize(content)
+    for word in words:
+        word_bonus = zintersect(
+            pipe, {matched: 0, word: 1}, _execute=False)
+        bonus_ecpm[word_bonus] = 1
+
+    if bonus_ecpm:
+        minimum = zunion(
+            pipe, bonus_ecpm, aggregate='MIN', _execute=False)
+        maximum = zunion(
+            pipe, bonus_ecpm, aggregate='MAX', _execute=False)
+
+        return words, zunion(
+            pipe, {base: 1, minimum: .5, maximum: .5}, _execute=False)
+    return words, base
+
+
+def record_targeting_result(conn, target_id, ad_id, words):
+    pipeline = conn.pipeline(True)
+
+    terms = conn.smembers(b'terms:' + ad_id)
+    matched = list(words & terms)
+    if matched:
+        matched_key = 'terms:matched:%s' % target_id
+        pipeline.sadd(matched_key, *matched)
+        pipeline.expire(matched_key, 900)
+
+    ad_type = conn.hget('type:', ad_id)
+    pipeline.incr('type:%s:views:' % ad_type)
+    for word in matched:
+        pipeline.zincrby('views:%s' % ad_id, 1, word)
+    pipeline.zincrby('views:%s' % ad_id, 1, '')
+
+    if not pipeline.execute()[-1] % 100:
+        update_cpms(conn, ad_id)
+
+
+def record_click(conn, target_id, ad_id, action=False):
+    pipeline = conn.pipeline(True)
+    click_key = 'clicks:%s' % ad_id
+
+    match_key = 'terms:matched:%s' % target_id
+
+    ad_type = conn.hget('type:', ad_id)
+    if ad_type == 'cpa':
+        pipeline.expire(match_key, 900)
+        if action:
+            click_key = 'actions:%s' % ad_id
+
+    if action and ad_type == 'cpa':
+        pipeline.incr('type:%s:actions:' % ad_type)
+    else:
+        pipeline.incr('type:%s:clicks:' % ad_type)
+
+    matched = list(conn.smembers(match_key))
+    matched.append('')
+    for word in matched:
+        pipeline.zincrby(click_key, 1, word)
+    pipeline.execute()
+
+    update_cpms(conn, ad_id)
+
+
+def update_cpms(conn, ad_id):
+    pipeline = conn.pipeline(True)
+    pipeline.hget('type:', ad_id)
+    pipeline.zscore('ad:base_value:', ad_id)
+    pipeline.smembers(b'terms:' + ad_id)
+    ad_type, base_value, words = pipeline.execute()
+
+    which = 'clicks'
+    if ad_type == 'cpa':
+        which = 'actions'
+
+    pipeline.get('type:%s:views:' % ad_type)
+    pipeline.get('type:%s:%s' % (ad_type, which))
+    type_views, type_clicks = pipeline.execute()
+    AVERAGE_PER_1K[ad_type] = (
+            1000. * int(type_clicks or '1') / int(type_views or '1'))
+
+    if ad_type == 'cpm':
+        return
+
+    view_key = 'views:%s' % ad_id
+    click_key = '%s:%s' % (which, ad_id)
+
+    to_ecpm = TO_ECPM[ad_type]
+
+    pipeline.zscore(view_key, '')
+    pipeline.zscore(click_key, '')
+    ad_views, ad_clicks = pipeline.execute()
+    if (ad_clicks or 0) < 1:
+        ad_ecpm = conn.zscore('idx:ad:value:', ad_id)
+    else:
+        ad_ecpm = to_ecpm(ad_views or 1, ad_clicks or 0, base_value)
+        pipeline.zadd('idx:ad:value:', {ad_id: ad_ecpm})
+
+    for word in words:
+        pipeline.zscore(view_key, word)
+        pipeline.zscore(click_key, word)
+        views, clicks = pipeline.execute()[-2:]
+
+        if (clicks or 0) < 1:
+            continue
+
+        word_ecpm = to_ecpm(views or 1, clicks or 0, base_value)
+        bonus = word_ecpm - ad_ecpm
+        pipeline.zadd('idx:' + word, {ad_id: bonus})
+    pipeline.execute()

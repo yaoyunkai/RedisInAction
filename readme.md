@@ -1384,5 +1384,80 @@ def zunion(conn, items, ttl=30, **kw):
 
 **计算CPA广告的eCPM** ：广告的点击通过率，用户在广告投放者的目标页面上执行动作的概率，被执行动作的价格相乘。
 
+## 8. 构建社交应用 ##
 
+### 8.1 用户和状态 ###
+
+#### 8.1.1 用户信息 ####
+
+![image-20210407200243624](.assert/image-20210407200243624.png)
+
+```python
+def create_user(conn, login, name):
+    lower_login = login.lower()
+    lock = acquire_lock_with_timeout(conn, 'user:' + lower_login, 1)
+    if not lock:
+        return None
+
+    if conn.hget('users:', lower_login):
+        release_lock(conn, 'user:' + lower_login, lock)
+        return None
+    uid = conn.incr('user:id:')
+    pipe = conn.pipeline(transaction=True)
+    # 用hash表 存储用户id 和 登录名 的关系
+    pipe.hset('users:', lower_login, uid)
+    pipe.hmset('user:{}'.format(uid), {
+        'login': login,
+        'id': id,
+        'name': name,
+        'followers': 0,
+        'following': 0,
+        'posts': 0,
+        'signup': time.time(),
+    })
+    pipe.execute()
+    release_lock(conn, 'user:' + lower_login, lock)
+    return uid
+```
+
+#### 8.1.2 状态消息 ####
+
+![image-20210407201701729](.assert/image-20210407201701729.png)
+
+```python
+def create_status(conn, uid, message, **data):
+    pipeline = conn.pipeline(True)
+    pipeline.hget('user:%s' % uid, 'login')
+    pipeline.incr('status:id:')
+    login, status_id = pipeline.execute()
+
+    if not login:
+        return None
+
+    data.update({
+        'message': message,
+        'posted': time.time(),
+        'id': status_id,
+        'uid': uid,
+        'login': login,
+    })
+    pipeline.hmset('status:%s' % status_id, data)
+    pipeline.hincrby('user:%s' % uid, 'posts')  # 增加一条状态计数
+    pipeline.execute()
+    return status_id
+```
+
+### 8.2 主页时间线 ###
+
+![image-20210407202556985](.assert/image-20210407202556985.png)
+
+```python
+def get_status_messages(conn, uid, timeline='home:', page=1, count=30):
+    status_list = conn.zrevrange('{}{}'.format(timeline, uid), (page - 1) * count, page * count - 1)
+    pipe = conn.pipeline(True)
+    for sid in status_list:
+        pipe.hgetall('status:{}'.format(sid))
+
+    return [_f for _f in pipe.execute() if _f]
+```
 
