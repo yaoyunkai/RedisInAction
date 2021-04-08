@@ -6,12 +6,20 @@
 the is a part of "RedisInAction"
 
 """
+import cgi
+import functools
 import http.server
+import json
 import math
+import random
+import socket
 import socketserver
 import threading
 import time
+import urllib.parse
 import uuid
+
+import redis
 
 
 def to_bytes(x):
@@ -20,6 +28,49 @@ def to_bytes(x):
 
 def to_str(x):
     return x.decode() if isinstance(x, bytes) else x
+
+
+CONFIGS = {}
+CHECKED = {}
+REDIS_CONNECTIONS = {}
+
+
+def get_config(conn, _type, component, wait=1):
+    key = 'config:%s:%s' % (_type, component)
+
+    if CHECKED.get(key) < time.time() - wait:
+        CHECKED[key] = time.time()
+        config = json.loads(conn.get(key) or '{}')
+        old_config = CONFIGS.get(key)
+
+        if config != old_config:
+            CONFIGS[key] = config
+
+    return CONFIGS.get(key)
+
+
+def redis_connection(component, wait=1):
+    key = 'config:redis:' + component
+
+    def wrapper(function):
+        @functools.wraps(function)
+        def call(*args, **kwargs):
+            old_config = CONFIGS.get(key, object())
+            _config = get_config(None, 'redis', component, wait)
+
+            config = {}
+            for k, v in _config.items():
+                config[k.encode('utf-8')] = v
+
+            if config != old_config:
+                REDIS_CONNECTIONS[key] = redis.Redis(**config)
+
+            return function(
+                REDIS_CONNECTIONS.get(key), *args, **kwargs)
+
+        return call
+
+    return wrapper
 
 
 def acquire_lock_with_timeout(conn, lockname, acquire_timeout=10, lock_timeout=10):
@@ -360,13 +411,180 @@ class StreamingAPIServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 class StreamingAPIRequestHandler(http.server.BaseHTTPRequestHandler):
     identifier = None
-    query = None
+    query = {}
+
+    def do_GET(self):  # NOQA
+        parse_identifier(self)
+        if self.path != '/statuses/sample.json':
+            return self.send_error(404)
+
+    def do_POST(self):  # NOQA
+        parse_identifier(self)
+        if self.path != '/statuses/filter.json':
+            return self.send_error(404)
+        process_filters(self)
+
+
+def parse_identifier(handler):
+    handler.identifier = None
+    handler.query = {}
+    if '?' in handler.path:
+        handler.path, _, query = handler.path.partition('?')
+        handler.query = urllib.parse.parse_qs(query)
+        identifier = handler.query.get('identifier') or [None]
+        handler.identifier = identifier[0]
+
+
+FILTERS = ('track', 'filter', 'location')
+
+
+def process_filters(handler):
+    uid = handler.identifier
+    if not uid:
+        return handler.send_error(401, "identifier missing")
+
+    method = handler.path.rsplit('/')[-1].split('.')[0]
+    name = None
+    args = None
+    if method == 'filter':
+        data = cgi.FieldStorage(
+            fp=handler.rfile,
+            headers=handler.headers,
+            environ={'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': handler.headers['Content-Type'], }
+        )
+
+        for name in data:
+            if name in FILTERS:
+                args = data.getfirst(name).lower().split(',')
+                break
+
+        if not args:
+            return handler.send_error(401, "no filter provided")
+    else:
+        args = handler.query
+
+    handler.send_response(200)
+    handler.send_header('Transfer-Encoding', 'chunked')
+    handler.end_headers()
+
+    _quit = [False]
+    for item in filter_content(uid, method, name, args, _quit):
+        try:
+            handler.wfile.write('%X\r\n%s\r\n' % (len(item), item))
+        except socket.error:
+            _quit[0] = True
+    if not _quit[0]:
+        handler.wfile.write('0\r\n\r\n')
+
+
+@redis_connection('social-network')
+def filter_content(conn, _id, method, name, args, _quit):
+    match = create_filters(_id, method, name, args)
+
+    pubsub = conn.pubsub()
+    pubsub.subscribe(['streaming:status:'])
+
+    for item in pubsub.listen():
+        message = item['data']
+        decoded = json.loads(message)
+
+        if match(decoded):
+            if decoded.get('deleted'):
+                yield json.dumps({
+                    'id': decoded['id'], 'deleted': True})
+            else:
+                yield message
+
+        if _quit[0]:
+            break
+
+    pubsub.reset()
+
+
+def create_filters(_id, method, name, args):
+    if method == 'sample':
+        return SampleFilter(_id, args)
+    elif name == 'track':
+        return TrackFilter(args)
+    elif name == 'follow':
+        return FollowFilter(args)
+    elif name == 'location':
+        return LocationFilter(args)
+    raise Exception("Unknown filter")
+
+
+def SampleFilter(_id, args):
+    percent = int(args.get('percent', ['10'])[0], 10)
+    ids = list(range(100))
+    shuffler = random.Random(_id)
+    shuffler.shuffle(ids)
+    keep = set(ids[:max(percent, 1)])
+
+    def check(status):
+        return (status['id'] % 100) in keep
+
+    return check
+
+
+def TrackFilter(list_of_strings):
+    groups = []
+    for group in list_of_strings:
+        group = set(group.lower().split())
+        if group:
+            groups.append(group)
+
+    def check(status):
+        message_words = set(status['message'].lower().split())
+        for _group in groups:
+            if len(_group & message_words) == len(_group):
+                return True
+        return False
+
+    return check
+
+
+def FollowFilter(names):
+    nset = set()
+    for name in names:
+        nset.add('@' + name.lower().lstrip('@'))
+
+    def check(status):
+        message_words = set(status['message'].lower().split())
+        message_words.add('@' + status['login'].lower())
+
+        return message_words & nset
+
+    return check
+
+
+def LocationFilter(list_of_boxes):
+    boxes = []
+    for start in range(0, len(list_of_boxes) - 3, 4):
+        boxes.append(list(map(float, list_of_boxes[start:start + 4])))
+
+    def check(self, status):
+        location = status.get('location')
+        if not location:
+            return False
+
+        lat, lon = list(map(float, location.split(',')))
+        for box in self.boxes:
+            if (box[1] <= lat <= box[3] and
+                    box[0] <= lon <= box[2]):
+                return True
+        return False
+
+    return check
 
 
 if __name__ == '__main__':
-    import redis
+    # import redis
+    #
+    # red = redis.Redis('192.168.20.123', db=5)
+    #
+    # # create_user(red, 'liberty', 'Liberty Yao')
+    # # create_status(red, 1, 'this is start')
 
-    red = redis.Redis('192.168.20.123', db=5)
-
-    # create_user(red, 'liberty', 'Liberty Yao')
-    # create_status(red, 1, 'this is start')
+    ser = StreamingAPIServer(('localhost', 8080), StreamingAPIRequestHandler)
+    print('Starting server, use <Ctrl-C> to stop')
+    ser.serve_forever()
