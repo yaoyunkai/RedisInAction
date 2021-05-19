@@ -1134,7 +1134,7 @@ def poll_queue(conn):
 
 这个过程就是从文档 --> 到redis集合的过程。
 
-![image-20210405221703197](.assert/image-20210405221703197.png)
+![image-20210405221703197](.assets/image-20210405221703197.png)
 
 **1. 基本索引操作**
 
@@ -1390,7 +1390,7 @@ def zunion(conn, items, ttl=30, **kw):
 
 #### 8.1.1 用户信息 ####
 
-![image-20210407200243624](.assert/image-20210407200243624.png)
+![image-20210407200243624](.assets/image-20210407200243624.png)
 
 ```python
 def create_user(conn, login, name):
@@ -1422,7 +1422,7 @@ def create_user(conn, login, name):
 
 #### 8.1.2 状态消息 ####
 
-![image-20210407201701729](.assert/image-20210407201701729.png)
+![image-20210407201701729](.assets/image-20210407201701729.png)
 
 ```python
 def create_status(conn, uid, message, **data):
@@ -1449,7 +1449,7 @@ def create_status(conn, uid, message, **data):
 
 ### 8.2 主页时间线 ###
 
-![image-20210407202556985](.assert/image-20210407202556985.png)
+![image-20210407202556985](.assets/image-20210407202556985.png)
 
 ```python
 def get_status_messages(conn, uid, timeline='home:', page=1, count=30):
